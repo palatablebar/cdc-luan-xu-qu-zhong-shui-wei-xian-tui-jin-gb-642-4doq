@@ -16,7 +16,10 @@
 - 水位线 = 已应用事件最大 `event_time` − 10 分钟，严格小于才记迟到，迟到**仍然应用**；
 - 快照按 `event_time ≤ as_of` 物化，`as_of` 之后的事件留待定窗口，一并给出合计；
 - 批次键 = 输入摘要 + 规则版本 + 参数，同一输入重跑命中批次、不新增行；
-- 导出事件证据、隔离区、冲突表、快照 CSV/JSON 与运行清单（含 `run_id` 与每个输入的 sha256）。
+- 保留边界 = 最慢消费者确认位置（`safe`）或最新发布位置（`latest`，越过慢消费者需显式确认），
+  边界之上的事件一律保留；回收只从热区摘到归档，证据行与待重放事件永远保留；
+- 导出事件证据、隔离区、冲突表、快照 CSV/JSON、保留结果 CSV/JSON 与运行清单（含 `run_id`
+  与每个输入的 sha256）。
 
 ## 功能模块
 
@@ -28,7 +31,8 @@
 | M4 水位迟到 | 看水位时间轴与迟到明细 | `GET /api/watermark`、页面 `/` | `watermark.py` `late.py` |
 | M5 快照物化 | 按水位物化快照，看待定键 | `POST /api/snapshot`、页面 `/snapshot` | `apply.py` `materialize.py` |
 | M6 批次续跑 | 查历史、看清单、续跑与重跑 | `GET /api/batches`、页面 `/batches` | `state.py` `resume.py` `history.py` |
-| M7 审计导出 | 下载证据行、隔离、冲突、快照与清单 | `GET /api/export/*` | `csv_out.py` `json_out.py` `manifest_out.py` |
+| M7 审计导出 | 下载证据行、隔离、冲突、快照、保留结果与清单 | `GET /api/export/*` | `csv_out.py` `json_out.py` `manifest_out.py` |
+| M8 保留回收 | 裁决保留边界、登记消费者、清理与续跑、导出保留结果 | `GET/POST /api/retention*`、页面 `/retention` | `boundary.py` `decide.py` `service.py` |
 
 模块内统一是 `handler.py`（入口）+ `service.py`（编排）+ 两个纯规则/读写文件；
 定义写在 `docs/DATA-DICTIONARY.md`，坑与测试映射写在 `docs/DEPTH.md`。
@@ -58,7 +62,9 @@ docker compose down -v             # 连数据库卷一起删
 2. `/events` 按分类筛选，看每行的行号引用与原因码；
 3. `/conflicts` 看冲突分组、隔离区与优先级表，导出隔离 CSV；
 4. `/snapshot` 点「物化」，看活跃 / 墓碑 / 待定与三条对账；
-5. `/batches` 看 `run_id`、输入 sha256、阶段耗时，导出运行清单。
+5. `/batches` 看 `run_id`、输入 sha256、阶段耗时，导出运行清单；
+6. `/retention` 看消费者确认位置与保留边界，按最慢确认或最新发布收口，清理后从哪继续、
+   哪些事件保留与原因码，并导出同一份保留结果。
 
 ## API 与页面
 
@@ -74,10 +80,14 @@ docker compose down -v             # 连数据库卷一起删
 | GET | `/api/snapshot` / POST `/api/snapshot` | 读快照 / 重新物化 |
 | GET | `/api/batches`、`/api/batches/{id}`、`/api/batches/{id}/manifest` | 批次与清单 |
 | POST | `/api/batches/{id}/resume` | 续跑 |
-| GET | `/api/export/{events,quarantine,conflicts,snapshot}.csv` | 证据导出 |
-| GET | `/api/export/{snapshot,manifest}.json` | 快照与运行清单 |
+| GET | `/api/retention`、`/api/retention/plan` | 保留边界预览与逐条裁决 |
+| GET/POST | `/api/retention/consumers`、`/api/retention/consumers/{id}/confirm` | 消费者登记与确认 |
+| POST | `/api/retention` | 跑一次清理（`policy=safe/latest`，`latest` 越权需 `override`） |
+| GET/POST | `/api/retention/{id}`、`/items`、`/resume`、`/restore` | 保留结果、续跑与归档回搬 |
+| GET | `/api/export/{events,quarantine,conflicts,snapshot,retention}.csv` | 证据与保留结果导出 |
+| GET | `/api/export/{snapshot,manifest,retention}.json` | 快照、运行清单与保留结果 |
 
-页面共 6 个：`/`、`/events`、`/schema`、`/conflicts`、`/snapshot`、`/batches`。
+页面共 7 个：`/`、`/events`、`/schema`、`/conflicts`、`/snapshot`、`/batches`、`/retention`。
 
 ## 目录
 
@@ -85,7 +95,7 @@ docker compose down -v             # 连数据库卷一起删
 app/
   main.py config.py errors.py reasons.py manifest.py store.py web.py bootstrap.py
   modules/m1_events/ … m7_export/        # 每模块 handler + service + 2 个规则文件
-  templates/                             # base + 6 页
+  templates/                             # base + 7 页
   static/                                # theme / layout / components + 3 个 js
 docs/  DEPTH.md  DATA-DICTIONARY.md  RUNBOOK.md
 sample_data/  events_main.jsonl  events_v1_gb.csv  events_late.jsonl  events_clean.jsonl  schema_contract.json

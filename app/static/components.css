@@ -202,6 +202,14 @@ table.grid tr.is-dim td {
   color: var(--ink-muted);
 }
 
+table.grid tr.is-warn td {
+  background: var(--ghost);
+}
+
+table.grid tr.is-warn td:first-child {
+  box-shadow: inset 2px 0 0 var(--warn);
+}
+
 .num {
   text-align: right;
   font-family: var(--font-num);
@@ -402,6 +410,18 @@ textarea {
   color: var(--accent);
   border-color: var(--accent);
   background: var(--ghost);
+}
+
+.chips .chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  padding: 3px 9px;
+  font-family: var(--font-num);
+  font-size: 11px;
+  color: var(--ink-muted);
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius);
 }
 
 .kv {

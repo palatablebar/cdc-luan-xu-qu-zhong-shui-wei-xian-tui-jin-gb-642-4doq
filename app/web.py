@@ -26,6 +26,7 @@ NAV = (
     ("/conflicts", "冲突隔离", "conflicts"),
     ("/snapshot", "快照", "snapshot"),
     ("/batches", "批次", "batches"),
+    ("/retention", "保留", "retention"),
 )
 
 ROW_CLASS_LABELS = {
@@ -36,6 +37,9 @@ ROW_CLASS_LABELS = {
 }
 SNAPSHOT_LABELS = {"active": "活跃", "tombstone": "墓碑", "pending": "待定"}
 STATUS_LABELS = {"done": "完成", "failed": "失败", "running": "运行中", "stale": "已拒绝"}
+RETENTION_STATUS_LABELS = {"done": "完成", "partial": "部分完成", "running": "运行中",
+                           "failed": "失败", "restored": "已回搬"}
+DECISION_LABELS = {"trim": "回收", "retain": "保留"}
 
 
 @dataclass
@@ -76,6 +80,8 @@ def setup(app) -> None:
     env.filters["state"] = lambda s: ROW_CLASS_LABELS.get(s, s or "—")
     env.filters["snap"] = lambda s: SNAPSHOT_LABELS.get(s, s or "—")
     env.filters["status"] = lambda s: STATUS_LABELS.get(s, s or "—")
+    env.filters["retention_status"] = lambda s: RETENTION_STATUS_LABELS.get(s, s or "—")
+    env.filters["decision"] = lambda s: DECISION_LABELS.get(s, s or "—")
     env.filters["level"] = lambda s: reasons.LEVEL_LABELS.get(s, s)
     env.filters["short"] = lambda s: (s or "")[:12]
     env.filters["masked"] = lambda s, n=12: ((s or "")[:n] + "…") if s and len(s) > n else (s or "—")

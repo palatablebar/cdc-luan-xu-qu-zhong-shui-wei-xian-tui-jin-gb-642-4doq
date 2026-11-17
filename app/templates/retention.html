@@ -1,0 +1,250 @@
+{% extends "base.html" %}
+{% block content %}
+<section class="panel">
+  <div class="panel-head">
+    <h1>保留与回收</h1>
+    <p class="panel-sub">发布 {{ preview.published_seq if preview else 0 }} · 边界 {{ preview.boundary_seq if preview else 0 }} · 热区 {{ preview.hot_before if preview else 0 }}</p>
+  </div>
+  <div class="panel-body">
+    <form class="actions" method="get" action="/retention">
+      <label class="field">
+        <span>裁决策略</span>
+        <select name="policy" id="policy-select">
+          {% for key, label in policies.items() %}
+          <option value="{{ key }}" {% if key == policy %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button class="btn" type="submit">重新判定</button>
+      <button class="btn btn-primary" id="btn-retention-safe" type="button"
+              data-policy="safe" {% if not batch %}disabled{% endif %}>按最慢确认收口</button>
+      <button class="btn" id="btn-retention-latest" type="button"
+              data-policy="latest" {% if not batch %}disabled{% endif %}>按最新发布收口</button>
+      {% if latest %}
+      <a class="btn btn-ghost" href="/api/export/retention.csv?retention_id={{ latest.retention_id }}">导出本次 CSV</a>
+      <a class="btn btn-ghost" href="/api/export/retention.json?retention_id={{ latest.retention_id }}">导出本次 JSON</a>
+      {% endif %}
+    </form>
+    <p class="hint" id="retention-hint">
+      {% if preview %}{{ preview.note }} · 清理后自序号 {{ preview.resume_seq }} 继续。{% else %}先采信一次再裁决保留边界。{% endif %}
+    </p>
+  </div>
+</section>
+
+{% if preview %}
+<section class="panel">
+  <div class="panel-head">
+    <h2>边界裁决</h2>
+    <p class="panel-sub">{{ preview.policy_label }}</p>
+  </div>
+  <div class="panel-body tight">
+    <div class="table-wrap">
+      <table class="grid">
+        <thead><tr><th>项</th><th>值</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>最新发布位置</td><td class="mono">#{{ preview.published_seq }}</td><td>{{ preview.published_event_time | localdt }}</td></tr>
+          <tr><td>最慢确认位置</td><td class="mono">{% if preview.slowest_seq is not none %}#{{ preview.slowest_seq }} · {{ preview.slowest_consumer }}{% else %}无消费者{% endif %}</td><td>活跃消费者里最小的确认位置</td></tr>
+          <tr><td>保留边界</td><td class="mono">#{{ preview.boundary_seq }}</td><td>{{ preview.boundary_event_time | localdt }}</td></tr>
+          <tr><td>清理后从哪继续</td><td class="mono">#{{ preview.resume_seq }}</td><td>下一次采信从该序号之后继续消费</td></tr>
+          <tr class="{% if preview.overridden %}is-warn{% endif %}"><td>被越过的消费者</td><td class="num">{{ preview.overridden | length }}</td><td>{% if preview.overridden %}{{ preview.overridden | map(attribute='consumer_id') | join('、') }}（R_OVERRIDDEN_CONSUMER）{% else %}无{% endif %}</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  {% if latest %}
+  <div class="panel-body">
+    <dl class="kv">
+      <dt>最近一次清理</dt><dd>{{ latest.retention_id }} · {{ latest.status | retention_status }} · 边界 #{{ latest.boundary_seq }} · 回收 {{ latest.counters.trim }} · 保留 {{ latest.counters.retain }}</dd>
+      <dt>本次从哪继续</dt><dd>#{{ latest.resume.from_seq if latest.resume else latest.boundary_seq + 1 }}（边界 {{ latest.boundary_seq }} + 1）</dd>
+      <dt>归档总数</dt><dd>{{ latest.archive_total }} 条（回收只搬进归档，可回搬）</dd>
+      {% if latest.status in ('partial', 'running') %}
+      <dt>中断</dt><dd><button class="btn" type="button" data-resume="{{ latest.retention_id }}">从游标续跑</button> 游标 #{{ latest.cursor_seq }}</dd>
+      {% endif %}
+    </dl>
+  </div>
+  {% endif %}
+</section>
+
+<div class="split-even">
+  <section class="panel">
+    <div class="panel-head">
+      <h2>消费者确认位置</h2>
+      <p class="panel-sub">{{ consumers | length }} 个 · 挡住清理 {{ preview.blocked | length }}</p>
+    </div>
+    <div class="panel-body tight">
+      <div class="table-wrap">
+        <table class="grid" data-sortable>
+          <thead><tr><th>消费者</th><th class="num">确认位置</th><th class="num">落后</th><th>挡住清理</th><th>确认时间</th></tr></thead>
+          <tbody>
+            {% for c in consumers %}
+            <tr class="{% if c.is_slowest %}is-warn{% endif %}">
+              <td class="mono">{{ c.consumer_id }}{% if c.is_slowest %} · 最慢{% endif %}</td>
+              <td class="num">#{{ c.confirmed_seq }}</td>
+              <td class="num">{{ c.behind }}</td>
+              <td>{% if c.blocks %}是（自 #{{ c.blocking_from_seq }}）{% else %}否{% endif %}</td>
+              <td class="mono nowrap">{{ c.confirmed_at | localdt }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if not consumers %}<p class="empty">还没有登记消费者；安全策略下边界为 0，不会回收任何事件。</p>{% endif %}
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="panel-head">
+      <h2>挡住清理的消费者</h2>
+      <p class="panel-sub">{{ preview.blocked | length }} 个</p>
+    </div>
+    <div class="panel-body tight">
+      <div class="table-wrap">
+        <table class="grid">
+          <thead><tr><th>消费者</th><th class="num">确认</th><th class="num">落后</th><th class="num">自序号</th></tr></thead>
+          <tbody>
+            {% for c in preview.blocked %}
+            <tr><td class="mono">{{ c.consumer_id }}</td><td class="num">#{{ c.confirmed_seq }}</td><td class="num">{{ c.behind }}</td><td class="num">#{{ c.blocking_from_seq }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% if not preview.blocked %}<p class="empty">没有消费者挡住清理。</p>{% endif %}
+    </div>
+  </section>
+</div>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>对账</h2>
+    <p class="panel-sub">{{ "平" if preview.reconcile | selectattr('ok') | list | length == preview.reconcile | length else "不平" }}</p>
+  </div>
+  <div class="panel-body tight">
+    <div class="table-wrap">
+      <table class="grid">
+        <thead><tr><th>账</th><th>左</th><th class="num">值</th><th>右</th><th class="num">值</th><th>说明</th></tr></thead>
+        <tbody>
+          {% for row in preview.reconcile %}
+          <tr>
+            <td>{{ row.name }}</td>
+            <td>{{ row.left }}</td>
+            <td class="num">{{ row.left_value | num }}</td>
+            <td>{{ row.right }}</td>
+            <td class="num"><span class="balance {% if not row.ok %}is-bad{% endif %}">{{ row.right_value | num }}</span></td>
+            <td>{{ row.note or ('平' if row.ok else '不平') }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>逐条裁决（预览）</h2>
+    <p class="panel-sub">热区 {{ items | length }} · 回收 {{ preview.counters.trim | num }} · 保留 {{ preview.counters.retain | num }}</p>
+  </div>
+  <div class="panel-body">
+    <div class="chips">
+      <a href="/retention?policy={{ policy }}">全部 {{ items | length }}</a>
+      {% for code, count in preview.counters.by_reason.retain.items() %}
+      <span class="chip">{{ code }} {{ count }}</span>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="panel-body tight">
+    <div class="table-wrap">
+      <table class="grid" data-sortable>
+        <thead><tr><th class="num">#</th><th>行号引用</th><th>键</th><th class="num">版本</th><th>分类</th><th>裁决</th><th>原因码</th><th>明细</th></tr></thead>
+        <tbody>
+          {% for item in items %}
+          <tr id="reason-{{ item.reason_code }}" class="{% if item.decision == 'retain' %}is-dim{% endif %}">
+            <td class="num seq">{{ item.seq }}</td>
+            <td class="mono nowrap">{{ item.row_ref }}</td>
+            <td class="mono">{{ item.table_name }}/{{ item.pk }}</td>
+            <td class="num">{{ item.version if item.version is not none else '—' }}</td>
+            <td><span class="state state-{{ item.row_class }}">{{ item.row_class | state }}</span></td>
+            <td><span class="state state-{{ 'applied' if item.decision == 'trim' else 'conflict' }}">{{ item.decision | decision }}</span></td>
+            <td class="nowrap"><code class="code is-{{ item.reason_code | level }}">{{ item.reason_code }}</code></td>
+            <td class="ellipsis" title="{{ item.detail }}">{{ item.detail }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if not items %}<p class="empty">热区没有可裁决的事件。</p>{% endif %}
+  </div>
+</section>
+{% endif %}
+
+{% if latest %}
+<section class="panel">
+  <div class="panel-head">
+    <h2>最近一次保留结果</h2>
+    <p class="panel-sub">{{ latest.retention_id }} · {{ latest.boundary_seq }} / {{ latest.published_seq }} · 回收 {{ latest.counters.trim | num }} · 保留 {{ latest.counters.retain | num }}</p>
+  </div>
+  <div class="panel-body tight">
+    <div class="table-wrap">
+      <table class="grid" data-sortable>
+        <thead><tr><th class="num">#</th><th>行号引用</th><th>键</th><th class="num">版本</th><th>分类</th><th>裁决</th><th>位置</th><th>原因码</th></tr></thead>
+        <tbody>
+          {% for item in latest['items'] %}
+          <tr class="{% if item.decision == 'retain' %}is-dim{% endif %}">
+            <td class="num seq">{{ item.seq }}</td>
+            <td class="mono nowrap">{{ item.row_ref }}</td>
+            <td class="mono">{{ item.table_name }}/{{ item.pk }}</td>
+            <td class="num">{{ item.version if item.version is not none else '—' }}</td>
+            <td><span class="state state-{{ item.row_class }}">{{ item.row_class | state }}</span></td>
+            <td><span class="state state-{{ 'applied' if item.decision == 'trim' else 'conflict' }}">{{ item.decision | decision }}</span></td>
+            <td>{{ "归档" if item.location == "archive" else "热区" }}</td>
+            <td class="nowrap"><code class="code is-{{ item.reason_code | level }}">{{ item.reason_code }}</code></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <div class="panel-body">
+      <a class="btn" href="/api/export/retention.csv?retention_id={{ latest.retention_id }}">导出该结果 CSV</a>
+      <a class="btn" href="/api/export/retention.json?retention_id={{ latest.retention_id }}">导出该结果 JSON</a>
+      <a class="btn btn-ghost" href="/api/retention/{{ latest.retention_id }}">结果 JSON（接口）</a>
+    </div>
+  </div>
+</section>
+{% endif %}
+
+<section class="panel">
+  <div class="panel-head">
+    <h2>保留运行</h2>
+    <p class="panel-sub">{{ runs | length }} 次</p>
+  </div>
+  <div class="panel-body tight">
+    <div class="table-wrap">
+      <table class="grid" data-sortable>
+        <thead><tr><th>保留号</th><th>策略</th><th>状态</th><th class="num">边界</th><th class="num">发布</th><th class="num">回收</th><th class="num">保留</th><th class="num">尝试</th><th>时间</th><th class="no-sort">操作</th></tr></thead>
+        <tbody>
+          {% for r in runs %}
+          <tr class="{% if latest and r.retention_id == latest.retention_id %}{% else %}is-dim{% endif %}">
+            <td class="mono ellipsis" title="{{ r.retention_id }}">{{ r.retention_id | masked(18) }}</td>
+            <td>{{ r.policy }}</td>
+            <td><span class="state state-{{ 'applied' if r.status == 'done' else 'conflict' }}">{{ r.status | retention_status }}</span></td>
+            <td class="num">#{{ r.boundary_seq }}</td>
+            <td class="num">#{{ r.published_seq }}</td>
+            <td class="num">{{ r.trim | num }}</td>
+            <td class="num">{{ r.retain | num }}</td>
+            <td class="num">{{ r.attempts }}</td>
+            <td class="mono nowrap">{{ r.created_at | localdt }}</td>
+            <td class="nowrap">
+              <a href="/api/retention/{{ r.retention_id }}">结果</a>
+              {% if r.status == 'partial' %}
+              <button class="btn btn-ghost" type="button" data-resume="{{ r.retention_id }}">续跑</button>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% if not runs %}<p class="empty">还没有保留运行。</p>{% endif %}
+  </div>
+</section>
+{% endblock %}

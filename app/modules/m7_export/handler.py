@@ -46,6 +46,26 @@ def export_manifest(ctx: Ctx = Depends(get_ctx)) -> Response:
                     headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
+@router.get("/api/export/retention.csv")
+def export_retention(retention_id: str | None = None,
+                     ctx: Ctx = Depends(get_ctx)) -> Response:
+    batch = service._batch(ctx.store, None)
+    data, filename = service.render_retention_csv(ctx.store, batch["batch_id"],
+                                                  retention_id)
+    return Response(content=data, media_type=CSV_MEDIA,
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@router.get("/api/export/retention.json")
+def export_retention_json(retention_id: str | None = None,
+                          ctx: Ctx = Depends(get_ctx)) -> Response:
+    batch = service._batch(ctx.store, None)
+    data, filename = service.render_retention_json(ctx.store, batch["batch_id"],
+                                                   retention_id)
+    return Response(content=data, media_type=JSON_MEDIA,
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
 @router.get("/api/export/snapshot.json")
 def export_snapshot_json(ctx: Ctx = Depends(get_ctx)) -> Response:
     batch = service._batch(ctx.store, None)

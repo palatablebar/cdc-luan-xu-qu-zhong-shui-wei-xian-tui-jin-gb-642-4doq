@@ -1,12 +1,15 @@
 # 深度登记 cdcwater（CDC 乱序去重与水位线推进）
 
-- 规模：中型（7 个功能模块 / 7 个页面 / 79 条测试）
+- 规模：中型（8 个功能模块 / 7 个页面 / 103 条测试）
 - 核心规则一：**版本序折叠 + 墓碑**——每个 `(table, pk)` 按 `version` 升序应用，`delete` 写墓碑；
   同键同版本出现两种内容整组不应用（`C_VERSION_CONFLICT`），删除之后到达的低版本 upsert
   不复活（`C_TOMBSTONE_RESURRECT`），删除之前到达的低版本照常应用后被覆盖。
 - 核心规则二：**水位线与半开窗口**——水位线 = 已应用事件最大 `event_time` − 10 分钟，单调
   不回退；`event_time < 水位线` 记迟到但**仍然应用**；快照取 `event_time ≤ as_of`，
   待定窗口 `(as_of, +inf)` 半开，两窗口不重叠也不留缝。
+- 核心规则三：**保留边界只向前，回收只搬不删**——保留边界取最慢消费者确认位置（`safe`）
+  或最新发布位置（`latest`）；越过未确认消费者必须显式 `override`（否则 409）；回收只把
+  事件从热区搬进归档表，事件流 / 快照 / 证据导出仍读得到完整历史，证据行与待重放事件永不回收。
 - 使用者与工作流：订单库 CDC 管道负责人，每天收 3 个导出文件（主表、旧列名补数、迟到补丁），
   原先靠 grep 日志判断「这条到底应用了没有」；现在一次采信即可得到水位、迟到清单、冲突与
   隔离明细，以及可导出复核的快照与运行清单。
@@ -21,7 +24,8 @@
 | M4 水位迟到 | 看水位时间轴与迟到明细 | GET /api/watermark、页面 / | `app/modules/m4_watermark/watermark.py` `app/modules/m4_watermark/late.py` `app/modules/m4_watermark/service.py` | `tests/test_m4_watermark.py` |
 | M5 快照物化 | 按水位物化快照，看待定键与三条对账 | POST /api/snapshot、页面 /snapshot | `app/modules/m5_snapshot/apply.py` `app/modules/m5_snapshot/materialize.py` `app/modules/m5_snapshot/service.py` | `tests/test_m5_snapshot.py` |
 | M6 批次续跑 | 查历史、看运行清单、续跑与重跑 | GET /api/batches、POST /api/batches/{id}/resume、页面 /batches | `app/modules/m6_batches/state.py` `app/modules/m6_batches/resume.py` `app/modules/m6_batches/history.py` `app/modules/m6_batches/service.py` | `tests/test_m6_batches.py` |
-| M7 审计导出 | 下载证据行、隔离、冲突、快照与清单 | GET /api/export/* | `app/modules/m7_export/csv_out.py` `app/modules/m7_export/json_out.py` `app/modules/m7_export/manifest_out.py` `app/modules/m7_export/service.py` | `tests/test_m7_export.py` |
+| M7 审计导出 | 下载证据行、隔离、冲突、快照、保留结果与清单 | GET /api/export/* | `app/modules/m7_export/csv_out.py` `app/modules/m7_export/json_out.py` `app/modules/m7_export/manifest_out.py` `app/modules/m7_export/service.py` | `tests/test_m7_export.py` |
+| M8 保留回收 | 裁决保留边界、登记消费者、清理与续跑、导出保留结果 | GET/POST /api/retention*、页面 /retention | `app/modules/m8_retention/boundary.py` `app/modules/m8_retention/decide.py` `app/modules/m8_retention/service.py` | `tests/test_m8_retention.py` |
 
 端到端：`tests/test_e2e.py` 覆盖「样例 → 采信 → 归一 → 去重冲突 → 水位 → 快照 → 导出 → 页面」，
 含 4xx 失败输入与幂等重跑；`tests/test_invariants.py` 覆盖行账、键账、金额、幂等、迟到互补。
@@ -41,6 +45,9 @@
 | TRAP-19 | 一条事件同时像「重复」又像「冲突」，坏行还互相重复 | 按代码书写顺序覆盖，结果随遍历顺序变 | 优先级 `quarantine > conflict > duplicate > apply`，各桶由集合运算得出 | `app/modules/m3_dedup/service.py` | `tests/test_m3_dedup.py::test_conflict_beats_duplicate`、`tests/test_m3_dedup.py::test_priority_independent_of_input_order` |
 | TRAP-23 | 事件 `event_time` 恰好等于水位线 / 恰好等于 `as_of` | 两端都算，重复计入或漏计 | 迟到用半开 `[水位线, +inf)`；快照含 `as_of`、待定窗口 `(as_of, +inf)` 半开 | `app/modules/m4_watermark/watermark.py`、`app/modules/m5_snapshot/materialize.py` | `tests/test_m4_watermark.py::test_boundary_equal_watermark_is_not_late`、`tests/test_m5_snapshot.py::test_boundary_event_at_as_of_included_once` |
 | TRAP-26 | 拿上一轮旧导出再跑一次（最大事件 06:00 < 已持久化水位 08:52） | 无条件覆盖，水位回退、快照变旧 | 陈旧批次直接 409 `C_STALE_BATCH`，已落库结果不动 | `app/modules/m6_batches/resume.py`、`app/modules/m6_batches/state.py` | `tests/test_m6_batches.py::test_stale_input_rejected` |
+| TRAP-27 | 离线消费者还在巡检，页面按最新发布位置收口，把它没看过的历史事件清掉 | 静默越过慢消费者，巡检读到空洞 | `safe` 边界取最慢确认位置；`latest` 越过未确认消费者必须 `override`，否则 409 列出挡住的消费者，被越过的消费者单独可见 | `app/modules/m8_retention/boundary.py` | `tests/test_m8_retention.py::test_latest_policy_needs_override_when_consumer_behind`、`tests/test_e2e.py::test_retention_api_end_to_end` |
+| TRAP-28 | 清理中途进程被杀，重启又跑一遍 | 重复归档、重复计数、热区出现半条 | 保留键 = 批次 + 策略 + 发布 + 边界 + 确认快照；同键命中 done 复用、partial/running 续跑；归档先写后摘，`INSERT OR IGNORE` 幂等 | `app/modules/m8_retention/service.py`、`app/store.py` | `tests/test_m8_retention.py::test_interrupted_cleanup_is_resumable`、`tests/test_m8_retention.py::test_retry_same_key_is_idempotent` |
+| TRAP-29 | 回收旧版本后，浅回放折叠出与水位不一致的键状态 | 把中间版本搬走，留下高版本或空 | 同键只要有边界之上的版本，整键热区版本都保留（`R_RETAINED_KEY_OPEN`）；回收只搬进归档，读取时热区 ∪ 归档合并 | `app/modules/m8_retention/decide.py`、`app/store.py` | `tests/test_m8_retention.py::test_key_with_version_above_boundary_is_retained`、`tests/test_m8_retention.py::test_snapshot_rebuild_after_trim_is_stable` |
 
 ## 对账规则
 
@@ -48,7 +55,9 @@
 - **键账**：已应用键 = 快照键 + 只有待定事件的键；快照键 = 活跃键 + 墓碑键；
 - **金额账**：快照金额 + 待定金额 + 变化金额 = 已应用金额（Decimal，单位元，2 位）；
 - **迟到账**：迟到 + 准时 = 已应用（迟到只打标记，不改变应用结果）；
-- 四条账在首页、`/snapshot` 与 `manifest.json` 的 `reconcile` 中同时出现，任一条不平会显式为「不平」。
+- **保留账**：热区事件 = 回收 + 保留；回收条数都在边界内；非已应用事件全部是保留证据；
+- 四条账在首页、`/snapshot` 与 `manifest.json` 的 `reconcile` 中同时出现，任一条不平会显式为「不平」；
+  保留账在 `/retention` 与 `retention.json` 的 `reconcile` 中出现。
 
 样例数据的四账：行 42 = 27 + 2 + 3 + 10；键 19 = 18 + 1；快照 18 = 16 活跃 + 2 墓碑；
 金额 1552.51 + 200.00 + 0.00 = 1752.51。
@@ -63,12 +72,15 @@
     一律当复活，会丢掉 1001 的 v1/v2，快照金额少 120.50）；
   - `tests/test_m6_batches.py::test_stale_input_rejected`（后写覆盖会让水位从 08:52 退回 06:00）。
 - 不变量：
-  - `tests/test_invariants.py::test_row_accounting_identity`（行账守恒）；
+  - `tests/test_invariants.py::test_row_accounting_identity`（行账守恒）;
   - `tests/test_invariants.py::test_key_accounting_identity`（键账守恒）；
   - `tests/test_invariants.py::test_amount_conservation_is_exact`（金额守恒，Decimal 精确）；
   - `tests/test_invariants.py::test_idempotent_rerun_keeps_rows_and_totals`（幂等重跑）；
   - `tests/test_m4_watermark.py::test_watermark_monotonic`（水位单调）；
-  - `tests/test_m5_snapshot.py::test_rebuild_is_idempotent`（物化可重复）。
+  - `tests/test_m5_snapshot.py::test_rebuild_is_idempotent`（物化可重复）；
+  - `tests/test_m8_retention.py::test_retry_same_key_is_idempotent`（清理重试不重复计数）；
+  - `tests/test_m8_retention.py::test_interrupted_cleanup_is_resumable`（清理中断不丢记录）；
+  - `tests/test_invariants.py::test_retention_never_loses_records`（回收后热区 ∪ 归档完整）。
 
 ## 已知不覆盖
 

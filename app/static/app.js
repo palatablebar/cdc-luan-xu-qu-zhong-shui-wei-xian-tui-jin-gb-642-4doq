@@ -112,8 +112,49 @@
       return;
     }
 
-    if (target.id === "btn-preview") {
-      var input = document.getElementById("preview-input");
+    if (target.id === "btn-retention-safe" || target.id === "btn-retention-latest") {
+      var policy = target.getAttribute("data-policy") || "safe";
+      var body = { policy: policy };
+      if (policy === "latest" && target.getAttribute("data-override") !== "1") {
+        var ok = window.confirm(
+          "按最新发布收口会越过尚未确认的消费者，事件会归档但保留可从归档补数。继续？");
+        if (!ok) return;
+        body.override = true;
+      }
+      busy(target, true);
+      request("/api/retention", body)
+        .then(function (data) {
+          toast(data.idempotent_replay ? "复用保留结果 " + data.retention_id
+            : "回收 " + (data.counters.trim || 0) + " · 保留 " + (data.counters.retain || 0));
+          window.setTimeout(function () {
+            window.location.reload();
+          }, 650);
+        })
+        .catch(function (err) {
+          toast(err.message, true);
+          busy(target, false);
+        });
+      return;
+    }
+
+    if (target.hasAttribute && target.hasAttribute("data-resume")) {
+      var retentionId = target.getAttribute("data-resume");
+      busy(target, true);
+      request("/api/retention/" + encodeURIComponent(retentionId) + "/resume", {})
+        .then(function (data) {
+          toast("续跑完成 · 回收 " + (data.counters.trim || 0));
+          window.setTimeout(function () {
+            window.location.reload();
+          }, 650);
+        })
+        .catch(function (err) {
+          toast(err.message, true);
+          busy(target, false);
+        });
+      return;
+    }
+
+    if (target.id === "btn-preview") {      var input = document.getElementById("preview-input");
       var state = document.getElementById("preview-state");
       if (!input) return;
       var payload;

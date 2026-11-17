@@ -72,8 +72,7 @@
 
 | 计数 | 含义 |
 |---|---|
-| `raw_lines` | 数据行（不含注释行、空行、重复表头） |
-| `applied` | 通过契约与去重冲突、进入折叠的事件 |
+| `raw_lines` | 数据行（不含注释行、空行、重复表头） || `applied` | 通过契约与去重冲突、进入折叠的事件 |
 | `duplicates` | 同签名重复到达（保留首条） |
 | `conflicts` | 版本冲突 + 墓碑复活 |
 | `quarantine` | 契约不通过（字段、类型、必填、表名、时间、截断、列数） |
@@ -91,3 +90,34 @@
 `watermark_utc`、`max_event_time_utc`、`stages[]`、`counters`、`reconcile`。
 
 同一 `input_digest` 重跑命中同一 `batch_key`，返回原批次、不新增行。
+
+## 10 保留与回收（M8）
+
+保留以「到达序号」为坐标，所有位置都是已应用事件的 `seq`（从 1 起，0 表示尚未确认）。
+
+| 术语 | 定义 |
+|---|---|
+| 发布位置 `published_seq` | 本批次最后一个已应用事件的到达序号，也是保留边界不得越过的上界 |
+| 消费者确认位置 `confirmed_seq` | 消费者已巡检到的最远到达序号，**只前进不后退**，且不得超过发布位置 |
+| 最慢确认位置 | 活跃消费者中最小的 `confirmed_seq`；没有消费者时为 0 |
+| 保留边界 `boundary_seq` | `safe`：= 最慢确认位置；`latest`：= 发布位置（越过未确认消费者需 `override`） |
+| 清理后从哪继续 `resume_seq` | `boundary_seq + 1`，下一次采信 / 巡检从这里往后读 |
+| 回收 `trim` | 事件从热区搬进归档表 `retention_archive`，**从不物理删除** |
+| 保留 `retain` | 事件留在热区，附原因码 |
+
+逐事件裁决顺序（命中即留）：证据行（冲突 / 隔离 / 重复）→ 待定窗口 → 迟到 →
+边界之上 → 同键边界之上仍有版本 → 否则回收。原因码：
+
+| 原因码 | 裁决 | 含义 |
+|---|---|---|
+| `R_TRIMMED_CONFIRMED` | 回收 | 已被全部相关消费者确认，可归档 |
+| `R_RETAINED_EVIDENCE` | 保留 | 非已应用事件，保留作复核证据 |
+| `R_RETAINED_PENDING` | 保留 | `event_time > as_of`，还没进快照 |
+| `R_RETAINED_LATE` | 保留 | 迟到事件，补数窗口内待重放 |
+| `R_RETAINED_ABOVE_BOUNDARY` | 保留 | 到达序号在保留边界之上 |
+| `R_RETAINED_KEY_OPEN` | 保留 | 同键在边界之上仍有版本，保证重放折叠一致 |
+
+保留键 `run_key = (batch_id, policy, published_seq, boundary_seq, 活跃消费者确认快照)`：
+同一键重试命中已完成运行（复用）或部分完成 / 运行中运行（从游标续跑），不重复计数、
+不新增裁决行、不重复归档。
+

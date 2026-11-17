@@ -18,6 +18,8 @@ QUARANTINE_COLUMNS = ("行号引用", "表", "主键", "字段", "原值", "原�
 CONFLICT_COLUMNS = ("行号引用", "键", "版本", "操作", "事件时间(UTC)", "原因码", "明细")
 SNAPSHOT_COLUMNS = ("表", "主键", "版本", "状态", "金额(元)", "数量",
                     "事件时间(UTC)", "行号引用", "迟到", "待定")
+RETENTION_COLUMNS = ("到达序号", "行号引用", "表", "主键", "版本", "操作",
+                     "事件时间(UTC)", "分类", "裁决", "原因码", "位置", "明细")
 
 
 def to_csv(columns: tuple[str, ...], rows: list[list]) -> str:
@@ -78,5 +80,19 @@ def snapshot_rows(rows: list[dict]) -> list[list]:
             "" if row.get("amount") is None else str(row["amount"]),
             row.get("qty"), row["event_time_utc"], row["row_ref"],
             "是" if row.get("late") else "否", "是" if row.get("pending") else "否",
+        ])
+    return out
+
+
+def retention_rows(items: list[dict], decision_labels: dict) -> list[list]:
+    out = []
+    for item in items:
+        out.append([
+            item["seq"], item["row_ref"], item["table_name"], item["pk"],
+            item.get("version"), item.get("op"), item.get("event_time_utc"),
+            item.get("row_class"), decision_labels.get(item["decision"],
+                                                       item["decision"]),
+            item.get("reason_code") or "", item.get("location") or "hot",
+            item.get("detail") or "",
         ])
     return out

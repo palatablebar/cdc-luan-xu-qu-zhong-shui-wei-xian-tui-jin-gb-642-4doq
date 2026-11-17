@@ -102,3 +102,73 @@ def test_empty_state_pages_render(settings):
         snapshot = client.get("/snapshot")
         assert "还没有快照。" in snapshot.text
         assert "0.00" in snapshot.text
+
+
+def test_retention_api_end_to_end(client):
+    """保留接口：消费者 → 边界 → 409 越权 → override 收口 → 重试幂等 → 导出同源。"""
+    published = client.get("/api/retention").json()["published_seq"]
+    assert published > 0
+    assert client.post("/api/retention/consumers",
+                       json={"consumer_id": "report", "confirmed_seq": published}
+                       ).status_code == 200
+    assert client.post("/api/retention/consumers",
+                       json={"consumer_id": "offline", "confirmed_seq": published - 4}
+                       ).status_code == 200
+
+    blocked = client.post("/api/retention", json={"policy": "latest"})
+    assert blocked.status_code == 409
+    assert blocked.json()["error"] == "C_RETENTION_OVERRIDE_REQUIRED"
+    assert blocked.json()["detail"]["blocking"][0]["consumer_id"] == "offline"
+
+    forced = client.post("/api/retention",
+                         json={"policy": "latest", "override": True}).json()
+    assert forced["boundary_seq"] == published
+    assert forced["overridden"][0]["consumer_id"] == "offline"
+    assert forced["counters"]["trim"] > 0
+    assert all(row["ok"] for row in forced["reconcile"])
+
+    # 收口到发布位置后，安全策略只能落在已被越过的消费者位置，不再回收任何行
+    safe = client.post("/api/retention", json={"policy": "safe"}).json()
+    assert safe["boundary_seq"] == published - 4
+    assert safe["resume"]["from_seq"] == published - 3
+
+    retry = client.post("/api/retention",
+                        json={"policy": "latest", "override": True}).json()
+    assert retry["idempotent_replay"] is True
+    assert retry["retention_id"] == forced["retention_id"]
+
+    detail = client.get(f"/api/retention/{forced['retention_id']}").json()
+    assert len(detail["items"]) == forced["counters"]["total"]
+    export = client.get(f"/api/export/retention.json?retention_id="
+                        f"{forced['retention_id']}").json()
+    assert export["retention_id"] == forced["retention_id"]
+    assert export["counters"]["trim"] == forced["counters"]["trim"]
+    csv = client.get(f"/api/export/retention.csv?retention_id="
+                     f"{forced['retention_id']}")
+    assert csv.status_code == 200
+    assert "R_TRIMMED_CONFIRMED" in csv.content.decode("utf-8-sig")
+
+    # 回收之后事件流、快照、证据导出仍完整
+    assert client.get("/api/events").json()["count"] == X.RAW_LINES
+    assert len(client.get("/api/snapshot").json()["rows"]) == X.SNAPSHOT_KEYS
+    page = client.get("/retention")
+    assert page.status_code == 200
+    assert "R_RETAINED_EVIDENCE" in page.text
+
+
+def test_retention_plan_api_surfaces_boundary(client):
+    """plan 接口必须自带 batch_id 等字段，不能因为缺键 500/400。"""
+    published = client.get("/api/retention").json()["published_seq"]
+    client.post("/api/retention/consumers",
+                json={"consumer_id": "slow", "confirmed_seq": published - 1})
+    safe = client.get("/api/retention/plan", params={"policy": "safe"}).json()
+    assert safe["batch_id"] == client.get("/api/health").json()["batch_id"]
+    assert safe["boundary_seq"] == published - 1
+    assert safe["resume_seq"] == published
+    assert len(safe["items"]) == X.APPLIED + X.DUPLICATES + X.CONFLICTS + X.QUARANTINE
+    latest = client.get("/api/retention/plan", params={"policy": "latest"})
+    assert latest.status_code == 409
+    assert latest.json()["error"] == "C_RETENTION_OVERRIDE_REQUIRED"
+    forced = client.get("/api/retention/plan",
+                        params={"policy": "latest", "override": "true"}).json()
+    assert forced["boundary_seq"] == published

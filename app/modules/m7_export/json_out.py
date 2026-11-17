@@ -76,3 +76,58 @@ def _row(row: dict) -> dict:
         "pending": bool(row.get("pending")),
     }
     return out
+
+
+def retention_document(*, run: dict, items: list[dict],
+                       decision_labels: dict) -> dict:
+    """保留结果的独立复核文件：边界裁决 + 消费者 + 逐条裁决 + 三条守恒。
+
+    与页面同一份数字，导出字节对同一 retention_id 稳定（键顺序固定）。
+    """
+    counters = run.get("counters") or {}
+    by_reason = counters.get("by_reason") or {}
+    return {
+        "retention_id": run.get("retention_id"),
+        "run_key": run.get("run_key"),
+        "batch_id": run.get("batch_id"),
+        "policy": run.get("policy"),
+        "policy_label": run.get("policy_label"),
+        "status": run.get("status"),
+        "published_seq": run.get("published_seq"),
+        "published_event_time": run.get("published_event_time"),
+        "slowest_seq": run.get("slowest_seq"),
+        "slowest_consumer": run.get("slowest_consumer"),
+        "boundary_seq": run.get("boundary_seq"),
+        "boundary_event_time": run.get("boundary_event_time"),
+        "ceiling_seq": run.get("ceiling_seq"),
+        "resume": run.get("resume") or {},
+        "blocked": run.get("blocked") or [],
+        "overridden": run.get("overridden") or [],
+        "counters": {
+            "trim": counters.get("trim", 0),
+            "retain": counters.get("retain", 0),
+            "total": counters.get("total", 0),
+            "by_reason": by_reason,
+        },
+        "reconcile": run.get("reconcile") or [],
+        "decision_labels": decision_labels,
+        "items": [
+            {
+                "seq": item["seq"],
+                "row_ref": item["row_ref"],
+                "table": item["table_name"],
+                "pk": str(item["pk"]),
+                "version": item.get("version"),
+                "op": item.get("op"),
+                "event_time_utc": item.get("event_time_utc"),
+                "row_class": item.get("row_class"),
+                "decision": item["decision"],
+                "decision_label": decision_labels.get(item["decision"],
+                                                      item["decision"]),
+                "reason_code": item.get("reason_code"),
+                "location": item.get("location") or "hot",
+                "detail": item.get("detail") or "",
+            }
+            for item in items
+        ],
+    }

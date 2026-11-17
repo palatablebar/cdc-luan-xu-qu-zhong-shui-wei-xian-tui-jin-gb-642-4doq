@@ -48,6 +48,30 @@ curl -s -o /tmp/manifest.json   "$BASE/api/export/manifest.json"
 | 导入报 409 | `C_STALE_BATCH` | 拿到的是旧导出，重新导出后再跑 |
 | 快照键比预期少 | `W_PENDING_WINDOW` | 事件落在水位之后，等下一轮水位推过 |
 | 水位不前进 | `W_WATERMARK_REGRESS` | 检查导出端时钟与文件版本 |
+| 保留边界停在 0 | `R_BOUNDARY_SAFE` | 还没登记消费者；先登记并确认，或用 `latest` 显式越权 |
+| 清理报 409 | `C_RETENTION_OVERRIDE_REQUIRED` | 有离线消费者没确认到发布位置；等它巡检，或显式 `override` 越过 |
+| 保留运行部分完成 | `R_RETENTION_PARTIAL` | 用保留号 POST `/api/retention/{id}/resume` 续跑，已归档的不会重复处理 |
+| 被越过消费者要补数 | `R_OVERRIDDEN_CONSUMER` | 从归档 POST `/api/retention/{id}/restore` 搬回热区，或直接查 `retention_archive` |
+
+## 4.1 夜间保留回收
+
+```bash
+BASE=http://127.0.0.1:18201
+# 1) 登记离线消费者与已巡检位置（位置只前进）
+curl -s -X POST $BASE/api/retention/consumers -H 'content-type: application/json' \
+  -d '{"consumer_id":"offline-audit","label":"离线巡检","confirmed_seq":36}'
+# 2) 预览边界：走 safe 不会越过任何人
+curl -s "$BASE/api/retention/plan?policy=safe" | python3 -m json.tool | head -40
+# 3) 按最慢确认收口；若要越过慢消费者，用 latest 且 override=true
+curl -s -X POST $BASE/api/retention -H 'content-type: application/json' \
+  -d '{"policy":"safe"}'
+# 4) 导出同一份保留结果复核
+curl -s -o /tmp/retention.json "$BASE/api/export/retention.json"
+curl -s -o /tmp/retention.csv  "$BASE/api/export/retention.csv"
+```
+
+判定看数字：`retention.json` 的 `reconcile` 三条全 `ok`；`counters.trim + retain`
+等于清理前热区条数；`resume.from_seq = boundary_seq + 1`。
 
 ## 5 重建数据库
 
@@ -72,4 +96,5 @@ python -m pytest -q
 - `quarantine.csv`：10 行，含 `字段`、`原值`、`原始文本`；
 - `conflicts.csv`：3 行，含两条证据行引用；
 - `snapshot.csv` / `snapshot.json`：18 键，活跃 16、墓碑 2；
-- `manifest.json`：`run_id`、每个输入的 sha256、阶段耗时、四账。
+- `manifest.json`：`run_id`、每个输入的 sha256、阶段耗时、四账；
+- `retention.csv` / `retention.json`：逐条裁决、边界、被越过的消费者、`resume.from_seq`，与 `/retention` 同一份数字。

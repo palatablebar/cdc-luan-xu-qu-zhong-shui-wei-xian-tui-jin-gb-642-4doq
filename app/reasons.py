@@ -139,6 +139,67 @@ REASONS = {
     "X_EMPTY_SELECTION": _r(
         "X_EMPTY_SELECTION", WARN, "export",
         "导出选择为空", "先跑一次采信再导出"),
+    # ---- M8 保留与回收 ----
+    "R_BOUNDARY_SAFE": _r(
+        "R_BOUNDARY_SAFE", INFO, "retention",
+        "保留边界取最慢确认位置，只回收已被全部消费者确认的事件", "默认策略，安全优先"),
+    "R_BOUNDARY_LATEST": _r(
+        "R_BOUNDARY_LATEST", WARN, "retention",
+        "保留边界越过最慢确认，按最新发布位置收口", "被越过的消费者必须显式确认，事后可从归档补数"),
+    "R_OVERRIDDEN_CONSUMER": _r(
+        "R_OVERRIDDEN_CONSUMER", WARN, "retention",
+        "该消费者确认位置落后于发布位置，本次被越过", "核对它的巡检计划，必要时从归档重放"),
+    "R_RETAINED_HELD": _r(
+        "R_RETAINED_HELD", WARN, "retention",
+        "被尚未确认的消费者挡住，本次保留", "等该消费者巡检确认后再回收"),
+    "R_RETAINED_ABOVE_BOUNDARY": _r(
+        "R_RETAINED_ABOVE_BOUNDARY", INFO, "retention",
+        "事件在保留边界之上，本次保留", "下一轮边界推进后再判定"),
+    "R_RETAINED_PENDING": _r(
+        "R_RETAINED_PENDING", WARN, "retention",
+        "事件落在待定窗口，保留待重放", "等水位推过、可重放后再回收"),
+    "R_RETAINED_LATE": _r(
+        "R_RETAINED_LATE", WARN, "retention",
+        "迟到事件仍在补数窗口内，保留待重放", "确认补数结束后再回收"),
+    "R_RETAINED_KEY_OPEN": _r(
+        "R_RETAINED_KEY_OPEN", INFO, "retention",
+        "该键仍有边界之上的版本，旧版本保留", "保证重放时能折叠出同一状态"),
+    "R_RETAINED_EVIDENCE": _r(
+        "R_RETAINED_EVIDENCE", INFO, "retention",
+        "冲突 / 隔离 / 重复证据行，保留不入回收", "复核与重放都要用到原始证据"),
+    "R_TRIMMED_CONFIRMED": _r(
+        "R_TRIMMED_CONFIRMED", INFO, "retention",
+        "已全部确认，归档回收出热区", "记录仍在归档表，可查询可导出"),
+    "R_RESUMED": _r(
+        "R_RESUMED", INFO, "retention",
+        "从断点游标续跑保留回收，已归档的不再重复处理", "中断不丢已归档记录"),
+    "R_RETENTION_REPLAY": _r(
+        "R_RETENTION_REPLAY", INFO, "retention",
+        "同一保留键重试命中，直接复用结果", "不重复计数、不新增裁决行"),
+    "R_RETENTION_PARTIAL": _r(
+        "R_RETENTION_PARTIAL", WARN, "retention",
+        "清理中断，状态为部分完成", "用保留号续跑，从游标继续"),
+    "C_RETENTION_OVERRIDE_REQUIRED": _r(
+        "C_RETENTION_OVERRIDE_REQUIRED", ERROR, "retention",
+        "按最新发布位置收口会越过尚未确认的消费者，需要显式确认", "先让消费者巡检，或显式同意越过"),
+    "C_CONSUMER_REGRESS": _r(
+        "C_CONSUMER_REGRESS", ERROR, "retention",
+        "消费者确认位置不能回退", "确认位置单调，只接受更靠后的位置"),
+    "E_CONSUMER_AHEAD": _r(
+        "E_CONSUMER_AHEAD", ERROR, "retention",
+        "确认位置超过当前发布位置", "先等事件发布，再确认消费"),
+    "E_BAD_POLICY": _r(
+        "E_BAD_POLICY", ERROR, "retention",
+        "未知保留策略", "可选 safe（最慢确认）/ latest（最新发布）"),
+    "E_CONSUMER_MISSING": _r(
+        "E_CONSUMER_MISSING", ERROR, "retention",
+        "消费者未登记", "先登记消费者及其确认位置"),
+    "E_RETENTION_NOT_FOUND": _r(
+        "E_RETENTION_NOT_FOUND", ERROR, "retention",
+        "保留运行不存在", "先跑一次保留判定"),
+    "E_BAD_CONFIRMATION": _r(
+        "E_BAD_CONFIRMATION", ERROR, "retention",
+        "确认位置不是非负整数", "确认位置是到达序号，从 0 起"),
 }
 
 

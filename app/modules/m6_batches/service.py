@@ -114,6 +114,11 @@ def run(*, settings, store, source: str = "all", params: dict | None = None,
     max_event = _iso(marks.max_event_time)
     resume.ensure_not_stale(store, max_event)
 
+    # 发布位置：本轮最后一个已应用事件的到达序号与时刻。保留回收以此为上界。
+    published_seq = max((n.seq for n in classified.applied), default=0)
+    published_event = _iso(max((n.event_time for n in classified.applied
+                                if n.event_time is not None), default=None))
+
     # ---- M5 快照 ----
     step = time.perf_counter()
     snapshot = materialize.materialize(applied, marks.final)
@@ -176,6 +181,7 @@ def run(*, settings, store, source: str = "all", params: dict | None = None,
         "source": bundle.source, "status": "done", "created_at": started_at,
         "finished_at": finished_at, "input_digest": bundle.input_digest,
         "watermark_utc": _iso(marks.final), "max_event_time": max_event,
+        "published_seq": published_seq, "published_event_time": published_event,
         "params": params, "note": _batch_note(resume_of, marks.late), "replay_of": resume_of,
     }
     doc = manifest_mod.build(
